@@ -1,0 +1,171 @@
+using SpecialFunctions
+using LinearAlgebra
+using ForwardDiff
+using Base.Threads
+
+JULIA_NUM_THREADS=4
+N = 1000
+h = 0.001
+function frickejimbo(Pμ, Pμν)::ComplexF64
+    b = Pμν[1]*Pμν[2] - Pμ[1]*Pμ[3] - Pμ[2]*Pμ[4];
+    c = (Pμν[1])^2 + (Pμν[2])^2 + (Pμ[1])^2 + (Pμ[2])^2 + (Pμ[3])^2 + (Pμ[4])^2 +(Pμ[1]*Pμ[2]*Pμ[3]*Pμ[4])-Pμν[1]*(Pμ[1]*Pμ[2]+Pμ[3]*Pμ[4])-Pμν[2]*(Pμ[1]*Pμ[4]+Pμ[2]*Pμ[3]);
+
+     return (-b - sqrt((b^2 - 4c)))/2
+end
+
+function computeη(θμ, θμν, t0 = 0)::ComplexF64
+    Pμ = (2 .*(cosc.(θμ)));
+    Pμν = (2 .*(cosc.(θμν)));
+
+    Pμν[3] = frickejimbo(Pμ, Pμν);
+
+    if (t0 ==0)
+        prefactor = Pμ[2]*Pμ[3] + Pμ[1]*Pμ[4] - 2Pμν[2] - Pμν[3]*Pμν[1] - (Pμ[1]*Pμ[3] + Pμ[2]*Pμ[4] - 2Pμν[3] - Pμν[2]*Pμν[1])*(exp(2*pi*θμν[1]*im));
+    else
+        prefactor = Pμ[2]*Pμ[3] + Pμ[1]*Pμ[4] - 2Pμν[2] - Pμν[3]*Pμν[1] - (Pμ[1]*Pμ[3] + Pμ[2]*Pμ[4] - 2Pμν[3] - Pμν[2]*Pμν[1])*(exp(-2*pi*θμν[1]*im));
+    end
+
+    hugeΓfac=((gamma(1-θμ[1])^2)*gamma(1+(θμ[2]+θμ[1]+θμν[1])/2)*gamma(1+(θμ[2]-θμ[1]+θμν[1])/2)*gamma(1+(θμ[3]+θμ[4]+θμν[1])/2)*gamma(1+(θμ[3]-θμ[4]+θμν[1])/2))/(16*(pi^2)*(sin(pi*(θμν[1]-θμ[1]-θμ[2])/2))\*(sin(pi*(θμν[1]-θμ[3]-θμ[4])/2))*((gamma(1+θμ[1]))^2)*gamma(1+(θμ[2]-θμ[1]-θμν[1])/2)*gamma(1+(θμ[3]-θμ[4]-θμν[1])/2));
+     #gamma(θμν[1]- θμ[1] - θμ[2])
+    return (hugeΓfac*prefactor)
+end
+
+function Invseries(ser) #ser only being a 2x2 matrix vector
+    Inverse = zeros(ComplexF64, 2, 2, N+1);
+    Inverse[:,:,1] = Matrix{ComplexF64}(I, 2,2);
+    for i = 2:(N+1)
+        A = -ser[:,:,i];
+        for j = 2:(i)
+            A += - (ser[:,:,j]*Inverse[:,:,(1+i-j)]);
+        end
+        Inverse[:,:,i] = A
+    end
+    return Inverse
+end
+
+function Gee(σ,θ1, θ2)
+    psi = zeros(ComplexF64,2,2, N+1)
+    a = (σ-θ1+θ2)/2;
+    b = (σ-θ1-θ2)/2;
+    psi[:,:,1] = Matrix{ComplexF64}(I,2,2);
+    psi[:,:,2] = [[(a*b)/σ ((1+σ)*(-a)*b)/σ];[((σ-a)*(σ-b)*(1-σ))/σ ((σ-a)*(b-σ))/σ]];
+    for p = 3:(N+1)
+        psi[:,:,p] = [[((a+p-1).*(b+p-1)/(p*(σ+p-1)))*psi[1,1, p-1] ((a+p-1)*(b+p-1)/((p-1)*(σ+p)))*psi[1,2, p-1] ];[((a-σ+p-1)*(b-σ+p-1)/((p-σ)*(p-1)))*psi[2,1, p-1] ((a-σ+p-1)*(b-σ+p-1)/(p*(p-σ-1)))*psi[2,2, p-1] ]];
+    end
+    return psi
+end
+
+function Aparallel(ind, vecg, vecginv)
+    result = zeros(ComplexF64,2,2);
+    if ind[2] < (ind[1]+1)
+         Threads.@threads for i = 1:(N-ind[1])
+            result += -vecg[:,:,(N+1-ind[1]-i)]*vecginv[:,:,(ind[2]+i+1)];
+        end
+    end
+    return result
+end
+
+function BuildA(θμ, σ)
+    vecg = Gee(σ[1], θμ[3], θμ[4]);
+    vecginv = Invseries(vecg);
+    ind = [(p,q) for p in range(1,N) for q in range(1,N)];
+    OPA = zeros(ComplexF64,2,2, N^2)
+    Threads.@threads for i = 1:(N^2)
+    #for i = 1:(N^2)
+        OPA[:,:,i] = Aparallel(ind[i], vecg, vecginv)
+    end
+    A = zeros(ComplexF64,2N,2N);
+    Threads.@threads for p = 1:N
+    #for p = 1:N
+        if (p == 1)
+            Threads.@threads for q = 1:N
+            #for q = 1:N
+                A[(2p-1):(2p), (2q-1):(2q)] = OPA[:,:,(p+q-1)];
+            end
+        else
+            Threads.@threads for q = 1:N
+            #for q = 1:N
+                A[(2p-1):(2p), (2q-1):(2q)] = OPA[:,:,N*(p-1)+q-1];
+            end
+        end
+    end
+    return LowerTriangular(A)
+end
+
+function Dparallel(ind, vecg, vecginv)
+    result = zeros(ComplexF64,2,2);
+    if ind[2] > (ind[1]-1)
+        Threads.@threads for i = 1:(ind[1]+1)
+            result += -vecg[:,:,(ind[1]-i+1)]*vecginv[:,:,(N - ind[2]+i)];
+        end
+    end
+    return result
+end
+
+function BuildD(θμ, σ)
+    vecg = Gee( ((-1)*(σ[1])), θμ[2], θμ[1]);
+    vecginv = Invseries(vecg);
+    ind = [(p,q) for p in range(1,N) for q in range(1,N)];
+    OPD = zeros(ComplexF64,2,2, N^2)
+    Threads.@threads for i = 1:(N^2)
+    #for i = 1:(N^2)
+        OPD[:,:,i] = Aparallel(ind[i], vecg, vecginv)
+    end
+    D = zeros(Complex,2N,2N);
+    Threads.@threads for p = 1:N
+    #for p = 1:N
+        if (p == 1)
+            Threads.@threads for q = 1:N
+            #for q = 1:N
+                D[(2p-1):(2p), (2q-1):(2q)] = OPD[:, :, p+q-1];
+            end
+        else
+            Threads.@threads for q = 1:N
+            #for q = 1:N
+                D[(2p-1):(2p), (2q-1):(2q)] = OPD[:, :, N*(p-1)+q];
+            end
+        end
+    end
+    return UpperTriangular(D)
+end
+
+function MultD(OpD, σ, η, t)
+    tm = [[(t^(-σ/2))/(sqrt(η)) 0];[0 (t^(σ/2))*(sqrt(η))]];
+    tminv = [[(t^(σ/2))*(sqrt(η)) 0];[0 (t^(-σ/2))/(sqrt(η))]];
+    MultD = zeros(ComplexF64, 2N, 2N);
+    Threads.@threads for p = 1:N
+    #for p = 1:N
+        Threads.@threads for q = 1:N
+        #for q = 1:N
+            MultD[(2p-1):(2p), (2q-1):(2q)] = ((t^(N+p-q)).*(tm*(OpD[(2p-1):(2p), (2q-1):(2q)])*tminv));
+        end
+    end
+    return MultD
+end
+
+function τVI(OpA,OpD, σ, θμ, η, t)
+    MD=MultD(OpD, σ[1], η, t);
+    OPK = (OpA*MD);
+    Fred = (Matrix{Float64}(I,2N,2N)-OPK);
+    τ = (t^(((σ[1]^2) - (θμ[1]^2) - (θμ[2]^2))/4))*((1-t)^(-2*θμ[2]*θμ[3]))*(det(Fred));
+    return τ
+end
+
+function f′(f, h, t)
+    F′ = (f(t+h) - f(t))/h;
+    return F′
+end
+
+function σVI(OpA,OpD, σ, θμ, η, t)
+    dfactor(t) = log((t^((θμ[1]^2 +θμ[2]^2 -θμ[3]^2 - θμ[4]^2)/2))*((1-t)^(θμ[2]^2 +θμ[3]^2 -θμ[1]^2 - θμ[4]^2)/2)*(τVI(OpA,OpD,σ, θμ, η, t)));
+    return t*(t-1)*(f′(dfactor, h, t))
+end
+
+θs = [1/(2sqrt(2)), (1/(2sqrt(2)))im, 1/(2sqrt(2)), -2]
+σs = [(1/(2sqrt(2)))*(2+im), (1/(2sqrt(2)))*(2+im), 1]
+η = computeη(θs, σs)
+OPA = BuildA(θs, σs)
+OPD = BuildD(θs, σs)
+t = 0.6;
+Painleveτ = τVI(OPA,OPD, σs, θs, η, t)
+Painσ = σVI(OPA,OPD, σs, θs, η, t)

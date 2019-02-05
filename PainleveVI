@@ -1,0 +1,8 @@
+#Attempt to make Painleve's TauVI
+function frickejimbo(Pμ, Pμν)
+    b = Pμν[0]*Pμν[1] - Pμ[0]*Pμ[2] - Pμ[1]*Pμ[3];
+    c = Pμν[0]^2 + Pμν[1]^2 + Pμ[0]^2 + Pμ[1]^2 + Pμ[2]^2 + Pμ[3]^2 + Pμ[0]*Pμ[1]*Pμ[2]*Pμ[3]\
+     - Pμν[0]*(Pμ[0]*Pμ[1] + Pμ[2]*Pμ[3]) - Pμν[1]*(Pμ[0]*Pμν[3] + Pμ[1]*Pμ[2]);
+
+     (-b - sqrt(b^2 - 4c))/2
+end
